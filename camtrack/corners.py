@@ -43,7 +43,6 @@ class Corners:
         self.ids = np.reshape(ids, (-1))
         self.coords = np.reshape(coords, (-1, 2))
         self.sizes = np.reshape(sizes, (-1))
-
     def filter(self, f):
         bools = []
         for i in range(self.ids.size):
