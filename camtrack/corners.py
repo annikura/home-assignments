@@ -62,6 +62,9 @@ class Corners:
     def to_frame_corners(self):
         return FrameCorners(self.ids, self.coords, self.sizes)
 
+    def rescale(self, coef):
+        return Corners((self.coords*coef).astype(int), self.sizes*coef, self.ids)
+
 def detect_new_corners(img, feature_params):
     corners = cv2.goodFeaturesToTrack(img, mask=None, **feature_params)
     return Corners(corners, np.full(corners.shape[0], feature_params.get("blockSize", 3)))
@@ -69,10 +72,18 @@ def detect_new_corners(img, feature_params):
 def detect_new_ranged_corners(img, a, b, step, feature_params):
     result = Corners(np.array([]), np.array([]), np.array([]))
     params = dict(feature_params)
-    for i in range(a, b, step):
-        params['blockSize'] = i
-        params['minDistance'] = 2 * i
-        result = result.merge(detect_new_corners(img, params))
+
+    for scale in [1., 0.75, 0.5]:
+        width = int(img.shape[1] * scale)
+        height = int(img.shape[0] * scale)
+        dim = (width, height)
+        new_image = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
+        for i in range(a, b, step):
+            if i / scale > 20:
+                continue
+            params['blockSize'] = i
+            params['minDistance'] = i
+            result = result.merge(detect_new_corners(new_image, params).rescale(1 / scale))
     return result
 
 def track_corners_lk(old_img, new_img, corners, lk_params):
@@ -88,12 +99,12 @@ def track_corners_lk(old_img, new_img, corners, lk_params):
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     feature_params = dict(maxCorners=1000,
-                          qualityLevel=0.02,
-                          minDistance=5,
+                          qualityLevel=0.01,
+                          minDistance=3,
                           blockSize=7)
-    lk_params = dict(winSize=(10, 10),
+    lk_params = dict(winSize=(5, 5),
                      maxLevel=2,
-                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.3))
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5, 0.3))
 
     old_img = frame_sequence[0]
     corners = detect_new_ranged_corners(frame_sequence[0], 5, 15, 3, feature_params)
@@ -110,7 +121,7 @@ def build(frame_sequence: pims.FramesSequence,
     """
     Build corners for all frames of a frame sequence.
 
-    :param frame_sequence: grayscale float32 frame sequence.
+    :param frame_sequence: grayscale float32 frame sequenc
     :param progress: enable/disable building progress bar.
     :return: corners for all frames of given sequence.
     """
