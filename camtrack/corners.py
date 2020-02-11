@@ -33,20 +33,74 @@ class _CornerStorageBuilder:
     def build_corner_storage(self):
         return StorageImpl(item[1] for item in sorted(self._corners.items()))
 
+class Corners:
+    MAX_ID = 0
+
+    def __init__(self, coords, sizes, ids=None):
+        if ids is None:
+            ids = np.arange(self.MAX_ID, self.MAX_ID + sizes.size)
+            self.MAX_ID += sizes.size
+        self.ids = np.reshape(ids, (-1, 1))
+        self.coords = np.reshape(coords, (-1, 2))
+        self.sizes = np.reshape(sizes, (-1, 1))
+
+    def filter(self, f):
+        bools = []
+        for i in range(self.ids.size):
+            bools.append(bool(f(self.ids[i], self.coords[i], self.sizes[i])))
+        bools = np.array(bools)
+        return Corners(self.coords[bools == 1], self.sizes[bools == 1], self.ids[bools == 1])
+
+    def merge(self, corners):
+        corners = corners.filter(lambda id, coords, size: not ((self.coords - coords)**2 >= (size * 2) ** 2).any())
+        return Corners(np.concatenate((self.coords, corners.coords), axis=0),
+                       np.concatenate((self.sizes, corners.sizes), axis=0),
+                       np.concatenate((self.ids, corners.ids), axis=0))
+
+    def to_frame_corners(self):
+        return FrameCorners(self.ids, self.coords, self.sizes)
+
+def detect_new_corners(img, feature_params):
+    corners = cv2.goodFeaturesToTrack(img, mask=None, **feature_params)
+    return Corners(corners, np.full(corners.shape[0], feature_params.get("blockSize", 3)))
+
+def detect_new_ranged_corners(img, a, b, step, feature_params):
+    result = Corners(np.array([]), np.array([]), np.array([]))
+    params = dict(feature_params)
+    for i in range(a, b, step):
+        params['blockSize'] = i
+        params['minDistance'] = 2 * i
+        result = result.merge(detect_new_corners(img, params))
+    return result
+
+def track_corners_lk(old_img, new_img, corners, lk_params):
+    old_img = (old_img * 255).astype(np.uint8)
+    new_img = (new_img * 255).astype(np.uint8)
+
+    old_coords = np.reshape(corners.coords, (-1, 1, 2)).astype(np.float32)
+    new_coords, status, _ = cv2.calcOpticalFlowPyrLK(old_img, new_img, old_coords, None, **lk_params)
+    status = np.reshape(status, status.size)
+
+    return Corners(new_coords[status==1], corners.sizes[status==1], corners.ids[status==1])
 
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
-    image_0 = frame_sequence[0]
-    corners = FrameCorners(
-        np.array([0]),
-        np.array([[0, 0]]),
-        np.array([55])
-    )
-    builder.set_corners_at_frame(0, corners)
-    for frame, image_1 in enumerate(frame_sequence[1:], 1):
-        builder.set_corners_at_frame(frame, corners)
-        image_0 = image_1
+    feature_params = dict(maxCorners=1000,
+                          qualityLevel=0.01,
+                          minDistance=30,
+                          blockSize=7)
+    lk_params = dict(winSize=(10, 10),
+                     maxLevel=2,
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.3))
 
+    old_img = frame_sequence[0]
+    corners = detect_new_ranged_corners(frame_sequence[0], 5, 20, 3, feature_params)
+    builder.set_corners_at_frame(0, corners.to_frame_corners())
+
+    for frame, img in enumerate(frame_sequence[1:], 1):
+        corners = track_corners_lk(old_img, img, corners, lk_params)
+        builder.set_corners_at_frame(frame, corners.to_frame_corners())
+        old_img = img
 
 def build(frame_sequence: pims.FramesSequence,
           progress: bool = True) -> CornerStorage:
