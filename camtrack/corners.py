@@ -40,9 +40,9 @@ class Corners:
         if ids is None:
             ids = np.arange(self.MAX_ID, self.MAX_ID + sizes.size)
             self.MAX_ID += sizes.size
-        self.ids = np.reshape(ids, (-1, 1))
+        self.ids = np.reshape(ids, (-1))
         self.coords = np.reshape(coords, (-1, 2))
-        self.sizes = np.reshape(sizes, (-1, 1))
+        self.sizes = np.reshape(sizes, (-1))
 
     def filter(self, f):
         bools = []
@@ -52,7 +52,9 @@ class Corners:
         return Corners(self.coords[bools == 1], self.sizes[bools == 1], self.ids[bools == 1])
 
     def merge(self, corners):
-        corners = corners.filter(lambda id, coords, size: not ((self.coords - coords)**2 >= (size * 2) ** 2).any())
+        def f(id, coords, size):
+            return not np.any((np.sum((self.coords - coords - 0.0) ** 2, axis=1) <= (size / 2) ** 2))
+        corners = corners.filter(f)
         return Corners(np.concatenate((self.coords, corners.coords), axis=0),
                        np.concatenate((self.sizes, corners.sizes), axis=0),
                        np.concatenate((self.ids, corners.ids), axis=0))
@@ -86,19 +88,20 @@ def track_corners_lk(old_img, new_img, corners, lk_params):
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     feature_params = dict(maxCorners=1000,
-                          qualityLevel=0.01,
-                          minDistance=30,
+                          qualityLevel=0.02,
+                          minDistance=5,
                           blockSize=7)
     lk_params = dict(winSize=(10, 10),
                      maxLevel=2,
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.3))
 
     old_img = frame_sequence[0]
-    corners = detect_new_ranged_corners(frame_sequence[0], 5, 20, 3, feature_params)
+    corners = detect_new_ranged_corners(frame_sequence[0], 5, 15, 3, feature_params)
     builder.set_corners_at_frame(0, corners.to_frame_corners())
 
     for frame, img in enumerate(frame_sequence[1:], 1):
         corners = track_corners_lk(old_img, img, corners, lk_params)
+        corners = corners.merge(detect_new_ranged_corners(img, 5, 15, 3, feature_params))
         builder.set_corners_at_frame(frame, corners.to_frame_corners())
         old_img = img
 
