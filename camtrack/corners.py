@@ -38,7 +38,7 @@ class Corners:
 
     def __init__(self, coords, sizes, ids=None):
         if ids is None:
-            ids = np.arange(self.MAX_ID, self.MAX_ID + sizes.size)
+            ids = np.arange(self.MAX_ID, self.MAX_ID + sizes.size).astype(int)
             self.MAX_ID += sizes.size
         self.ids = np.reshape(ids, (-1))
         self.coords = np.reshape(coords, (-1, 2))
@@ -52,14 +52,14 @@ class Corners:
 
     def merge(self, corners):
         def f(id, coords, size):
-            return not np.any((np.sum((self.coords - coords - 0.0) ** 2, axis=1) <= (size / 2) ** 2))
+            return not np.any((np.sum((self.coords - coords - 0.0) ** 2, axis=1) <= (size) ** 2))
         corners = corners.filter(f)
         return Corners(np.concatenate((self.coords, corners.coords), axis=0),
                        np.concatenate((self.sizes, corners.sizes), axis=0),
                        np.concatenate((self.ids, corners.ids), axis=0))
 
     def to_frame_corners(self):
-        return FrameCorners(self.ids, self.coords, self.sizes)
+        return FrameCorners(self.ids.astype(int), self.coords, self.sizes)
 
     def rescale(self, coef):
         return Corners((self.coords*coef).astype(int), self.sizes*coef, self.ids)
@@ -68,21 +68,16 @@ def detect_new_corners(img, feature_params):
     corners = cv2.goodFeaturesToTrack(img, mask=None, **feature_params)
     return Corners(corners, np.full(corners.shape[0], feature_params.get("blockSize", 3)))
 
-def detect_new_ranged_corners(img, a, b, step, feature_params):
+def detect_new_scaled_corners(img, scales, feature_params):
     result = Corners(np.array([]), np.array([]), np.array([]))
     params = dict(feature_params)
 
-    for scale in [1., 0.75, 0.5]:
+    for scale in scales:
         width = int(img.shape[1] * scale)
         height = int(img.shape[0] * scale)
         dim = (width, height)
         new_image = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
-        for i in range(a, b, step):
-            if i / scale > 20:
-                continue
-            params['blockSize'] = i
-            params['minDistance'] = i
-            result = result.merge(detect_new_corners(new_image, params).rescale(1 / scale))
+        result = result.merge(detect_new_corners(new_image, params).rescale(1 / scale))
     return result
 
 def track_corners_lk(old_img, new_img, corners, lk_params):
@@ -99,19 +94,22 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     feature_params = dict(maxCorners=1000,
                           qualityLevel=0.01,
-                          minDistance=3,
+                          minDistance=10,
                           blockSize=7)
     lk_params = dict(winSize=(5, 5),
                      maxLevel=2,
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5, 0.3))
 
     old_img = frame_sequence[0]
-    corners = detect_new_ranged_corners(frame_sequence[0], 5, 15, 3, feature_params)
+
+    scales = [1., 0.75, 0.5, 0.25]
+
+    corners = detect_new_scaled_corners(frame_sequence[0], scales , feature_params)
     builder.set_corners_at_frame(0, corners.to_frame_corners())
 
     for frame, img in enumerate(frame_sequence[1:], 1):
         corners = track_corners_lk(old_img, img, corners, lk_params)
-        corners = corners.merge(detect_new_ranged_corners(img, 5, 15, 3, feature_params))
+        corners = corners.merge(detect_new_scaled_corners(img, scales, feature_params))
         builder.set_corners_at_frame(frame, corners.to_frame_corners())
         old_img = img
 
