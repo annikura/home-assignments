@@ -28,14 +28,15 @@ from _camtrack import (
 )
 from _corners import (
     FrameCorners,
+    filter_frame_corners,
 )
 
 MIN_STARTING_POINTS = 5
 MIN_DIST = 4
-MAX_DIST = 60
+MAX_DIST = 30
 DIST_STEP = 2
 
-triang_params = TriangulationParameters(max_reprojection_error=1.,
+triang_params = TriangulationParameters(max_reprojection_error=0.5,
                                         min_triangulation_angle_deg=1.,
                                         min_depth=0.1)
 
@@ -83,8 +84,9 @@ class FrameTrack:
         if self.current_reproject_error is None or potential_reprojection_error.mean() < self.current_reproject_error:
             self.mtx = potential_new_mtx
             self.current_reproject_error = potential_reprojection_error.mean()
-            # print((potential_reprojection_error[ids1[potential_reprojection_error <  1]] > 1).sum())
-            return inliers
+            return cloud.ids[ids1][np.array(inliers)][
+                build_index_intersection(cloud.ids[ids1][np.array(inliers)],
+                                         cloud.ids[ids1][potential_reprojection_error < 1])[0]]
         return []
 
 def triangulate_trackers(t1: FrameTrack, t2: FrameTrack, camera, params):
@@ -98,29 +100,27 @@ def triangulate_trackers(t1: FrameTrack, t2: FrameTrack, camera, params):
 
 
 def track(iters, trackers, cloud, camera):
-    for t in trackers:
-        t.pnp(cloud, camera)
     for iter in range(iters):
-        best_pairs = []
-        for i, t1 in enumerate(trackers):
-            for j in range(i + MIN_DIST, min(i + MAX_DIST, len(trackers)), DIST_STEP):
-                t2 = trackers[j]
-                if t1.mtx is not None and t2.mtx is not None:
-                    best_pairs.append((t1, t2))
-        best_pairs = sorted(best_pairs,
-                            key=lambda x: x[0].current_reproject_error + x[1].current_reproject_error,
-                             reverse=True)
-        best_pairs = best_pairs[len(best_pairs) // 2:]
-        for i, (t1, t2) in enumerate(best_pairs):
-            ids, points = triangulate_trackers(t1, t2, camera, triang_params)
-            if len(points):
-                inliers = np.array(t2.pnp(cloud, camera))
-                print(inliers)
-                if len(inliers) > 0:
-                    _, inline_ids = build_index_intersection(inliers, ids)
-                    cloud.add_points(ids[inline_ids], points[inline_ids])
-                print("\rIteration {}/{}, triangulating pair {}/{}"
-                      .format(iter + 1, iters, i, len(best_pairs)), end=' ' * 20)
+        for frame_num, t1 in enumerate(trackers):
+            inliers = np.array(t1.pnp(cloud, camera)).flatten().astype(int)
+            layer_inliers = filter_frame_corners(t1.corners, inliers)
+            print("\rIteration {}/{}, frame {}/{}, {} inliners"
+                  .format(iter + 1, iters, frame_num, len(trackers), len(inliers)), end=' ' * 20)
+            if t1.mtx is None:
+                continue
+            for t2 in trackers:
+                if t1.id <= t2.id or t1.id > t2.id + 100 or t2.mtx is None:
+                    continue
+                corrs = build_correspondences(layer_inliers, t2.corners)
+                if not len(corrs.ids):
+                    continue
+                points, ids, _ = triangulate_correspondences(corrs,
+                                                             t1.mtx,
+                                                             t2.mtx,
+                                                             camera,
+                                                             triang_params)
+                if len(points) and len(inliers):
+                        cloud.add_points(ids, points)
         print("\rIteration {}/{}, {} points in the cloud"
               .format(iter + 1, iters, len(cloud.ids)))
 
@@ -151,7 +151,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                                        intrinsic_mat,
                                        triang_params)
     if len(points) < MIN_STARTING_POINTS:
-        print(f"Not enough starting points ({len(points)}), please choose another initial frames pair")
+        print(f"Not enough starting points ({len(points)}), please choose another initial frames pair"
+              f"\n0, 15 is a good pair for short fox, ")
         return [], PointCloudBuilder()
 
     point_cloud_builder = PointCloudBuilder(ids, points)
