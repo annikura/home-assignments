@@ -32,13 +32,14 @@ from _corners import (
 )
 
 MIN_STARTING_POINTS = 5
-MIN_DIST = 4
-MAX_DIST = 30
-DIST_STEP = 2
+ITERATIONS = 5
+MAX_REPROJECTION_ERROR = 5
+FRAMES_WINDOW_SIZE = 100
 
-triang_params = TriangulationParameters(max_reprojection_error=0.5,
+
+triang_params = TriangulationParameters(max_reprojection_error=MAX_REPROJECTION_ERROR,
                                         min_triangulation_angle_deg=1.,
-                                        min_depth=0.1)
+                                        min_depth=0.001)
 
 
 def build_index_intersection(ids1, ids2):
@@ -109,7 +110,7 @@ def track(iters, trackers, cloud, camera):
             if t1.mtx is None:
                 continue
             for t2 in trackers:
-                if t1.id <= t2.id or t1.id > t2.id + 100 or t2.mtx is None:
+                if t1.id == t2.id or abs(t1.id - t2.id) > FRAMES_WINDOW_SIZE or t2.mtx is None:
                     continue
                 corrs = build_correspondences(layer_inliers, t2.corners)
                 if not len(corrs.ids):
@@ -152,7 +153,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                                        triang_params)
     if len(points) < MIN_STARTING_POINTS:
         print(f"Not enough starting points ({len(points)}), please choose another initial frames pair"
-              f"\n0, 15 is a good pair for short fox, ")
+              f"\n0, 20 is a good pair for short fox, ")
         return [], PointCloudBuilder()
 
     point_cloud_builder = PointCloudBuilder(ids, points)
@@ -160,12 +161,15 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     frame_trackers[known_view_1[0]].update_reproj_error(point_cloud_builder, intrinsic_mat)
     frame_trackers[known_view_2[0]].update_reproj_error(point_cloud_builder, intrinsic_mat)
 
-    track(4, frame_trackers, point_cloud_builder, intrinsic_mat)
+    track(ITERATIONS, frame_trackers, point_cloud_builder, intrinsic_mat)
 
     view_mats = [x.mtx for x in frame_trackers]
     for i in range(1, len(view_mats)):
         if view_mats[i] is None:
             view_mats[i] = view_mats[i - 1]
+    for i in range(len(view_mats) - 2, -1, -1):
+        if view_mats[i] is None:
+            view_mats[i] = view_mats[i + 1]
 
     calc_point_cloud_colors(
         point_cloud_builder,
