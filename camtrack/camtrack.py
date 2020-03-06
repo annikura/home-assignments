@@ -31,11 +31,16 @@ from _corners import (
     filter_frame_corners,
 )
 
+INLINER_FREQUENCY_TRASHHOLD = 0.9
+MIN_INLINER_FRAMES = 5
 MIN_STARTING_POINTS = 5
 ITERATIONS = 5
-MAX_REPROJECTION_ERROR = 5
-FRAMES_WINDOW_SIZE = 100
+MAX_REPROJECTION_ERROR = 8
+MAX_TRANSLATION = 3
 
+FRAMES_STEP = 10
+FRAMES_MIN_WINDOW = 10
+FRAMES_MAX_WINDOW = 100
 
 triang_params = TriangulationParameters(max_reprojection_error=MAX_REPROJECTION_ERROR,
                                         min_triangulation_angle_deg=1.,
@@ -49,8 +54,17 @@ def build_index_intersection(ids1, ids2):
     return intersection
 
 
+def build_index_difference(ids1, ids2):
+    _, intersection = snp.intersect(ids1.flatten(),
+                                    ids2.flatten(),
+                                    indices=True)
+    mask = np.ones_like(ids1).astype(bool)
+    mask[intersection[0]] = False
+    return np.arange(ids1.size)[mask.flatten()]
+
+
 class FrameTrack:
-    MIN_INLIERS = 10
+    MIN_INLIERS = 2
 
     def __init__(self, id, corners: FrameCorners, mtx=None):
         self.changeble = mtx is None
@@ -58,6 +72,7 @@ class FrameTrack:
         self.corners = corners
         self.id = id
         self.current_reproject_error = None
+        self.last_inliners = []
 
     def update_reproj_error(self, cloud: PointCloudBuilder, camera):
         ids1, ids2 = build_index_intersection(cloud.ids, self.corners.ids)
@@ -73,11 +88,11 @@ class FrameTrack:
             ret, rvec, tvec, inliers = cv2.solvePnPRansac(cloud.points[ids1],
                                                           self.corners.points[ids2],
                                                           camera,
-                                                          None)
+                                                          None, reprojectionError=MAX_REPROJECTION_ERROR)
         except:
-            return []
-        if not ret or len(inliers) < FrameTrack.MIN_INLIERS:
-            return []
+            return self.last_inliners
+        if not ret or len(inliers) < FrameTrack.MIN_INLIERS or np.linalg.norm(tvec) > MAX_TRANSLATION:
+            return self.last_inliners
         potential_new_mtx = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
         potential_reprojection_error = compute_reprojection_errors(cloud.points[ids1],
                                                                    self.corners.points[ids2],
@@ -85,10 +100,9 @@ class FrameTrack:
         if self.current_reproject_error is None or potential_reprojection_error.mean() < self.current_reproject_error:
             self.mtx = potential_new_mtx
             self.current_reproject_error = potential_reprojection_error.mean()
-            return cloud.ids[ids1][np.array(inliers)][
-                build_index_intersection(cloud.ids[ids1][np.array(inliers)],
-                                         cloud.ids[ids1][potential_reprojection_error < 1])[0]]
-        return []
+            self.last_inliners = cloud.ids[ids1][np.array(inliers)]
+        return self.last_inliners
+
 
 def triangulate_trackers(t1: FrameTrack, t2: FrameTrack, camera, params):
     corrs = build_correspondences(t1.corners, t2.corners)
@@ -100,19 +114,55 @@ def triangulate_trackers(t1: FrameTrack, t2: FrameTrack, camera, params):
     return ids, points
 
 
+class FrequencyCounter:
+    def __init__(self):
+        self.freqs = {}
+        self.totals = {}
+        self.points = {}
+
+    def add(self, xs_subset, points, xs_total):
+        xs_subset = xs_subset.flatten().tolist()
+        points = list(points)
+        xs_total = xs_total.flatten().tolist()
+        for x, p in zip(xs_subset, points):
+            self.freqs[x] = self.freqs.get(x, 0) + 1
+            self.points[x] = p
+        for x in xs_total:
+            self.totals[x] = self.totals.get(x, 0) + 1
+            self.freqs[x] = self.freqs.get(x, 0)
+
+    def get_freq(self, x):
+        return self.freqs[x] / self.totals[x]
+
+    def get_top_x_percent_freq(self, x):
+        if not len(self.totals):
+            return 0
+        return self.get_freq(sorted(self.totals.keys(), key=self.get_freq, reverse=True)[int(x * len(self.totals))])
+
+    def get_freqs_above(self, th, min_in):
+        good_ids = sorted([x for x in self.points.keys() if self.get_freq(x) > th and self.freqs[x] > min_in])
+        return np.array(
+            good_ids).flatten().astype(int), \
+               np.array(
+                   [self.points[x] for x in good_ids]),
+
+
 def track(iters, trackers, cloud, camera):
+    start_ids, start_points = cloud.ids, cloud.points
+
     for iter in range(iters):
         for frame_num, t1 in enumerate(trackers):
-            inliers = np.array(t1.pnp(cloud, camera)).flatten().astype(int)
-            layer_inliers = filter_frame_corners(t1.corners, inliers)
-            print("\rIteration {}/{}, frame {}/{}, {} inliners"
-                  .format(iter + 1, iters, frame_num, len(trackers), len(inliers)), end=' ' * 20)
+            print("\rIteration {}/{}, triangulate for frame {}/{}"
+                  .format(iter + 1, iters, t1.id, len(trackers)), end=' ' * 20)
             if t1.mtx is None:
                 continue
-            for t2 in trackers:
-                if t1.id == t2.id or abs(t1.id - t2.id) > FRAMES_WINDOW_SIZE or t2.mtx is None:
+            for j in range(frame_num - FRAMES_MAX_WINDOW, frame_num + FRAMES_MAX_WINDOW + 1, FRAMES_STEP):
+                if j < 0 or j >= len(trackers):
                     continue
-                corrs = build_correspondences(layer_inliers, t2.corners)
+                t2 = trackers[j]
+                if abs(t1.id - t2.id) <= FRAMES_MIN_WINDOW or t2.mtx is None:
+                    continue
+                corrs = build_correspondences(t1.corners, t2.corners)
                 if not len(corrs.ids):
                     continue
                 points, ids, _ = triangulate_correspondences(corrs,
@@ -120,10 +170,26 @@ def track(iters, trackers, cloud, camera):
                                                              t2.mtx,
                                                              camera,
                                                              triang_params)
-                if len(points) and len(inliers):
-                        cloud.add_points(ids, points)
+                if len(points):
+                    cloud.add_points(ids, points)
+        fc = FrequencyCounter()
+        for t in trackers:
+            inliers = t.pnp(cloud, camera)
+            inliers = np.array(inliers).flatten().astype(int)
+            print("\rIteration {}/{}, PnP for frame {}/{}, {} inliners"
+                  .format(iter + 1, iters, t.id, len(trackers), len(inliers)), end=' ' * 20)
+            if len(inliers):
+                ids, _ = build_index_intersection(cloud.ids, inliers)
+                fc.add(inliers, cloud.points[ids], t.corners.ids)
+        good_points_ids, good_points = fc.get_freqs_above(INLINER_FREQUENCY_TRASHHOLD, MIN_INLINER_FRAMES)
+        cloud = PointCloudBuilder(good_points_ids, good_points)
+        cloud.add_points(start_ids, start_points)
+        for t in trackers:
+            t.pnp(cloud, camera)
+
         print("\rIteration {}/{}, {} points in the cloud"
-              .format(iter + 1, iters, len(cloud.ids)))
+              .format(iter + 1, iters, len(cloud.ids)), end=' ' * 20 + "\n")
+    return cloud
 
 
 def track_and_calc_colors(camera_parameters: CameraParameters,
@@ -147,21 +213,37 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
     frame_trackers[known_view_1[0]] = known_tracker_creator(known_view_1)
     frame_trackers[known_view_2[0]] = known_tracker_creator(known_view_2)
+
+    init_params = triang_params
+
+    for angle in range(90, 0, -2):
+        params = TriangulationParameters(max_reprojection_error=MAX_REPROJECTION_ERROR,
+                                         min_triangulation_angle_deg=angle,
+                                         min_depth=0.001)
+        _, points = triangulate_trackers(frame_trackers[known_view_1[0]],
+                                         frame_trackers[known_view_2[0]],
+                                         intrinsic_mat,
+                                         params)
+        if len(points) > 100:
+            print(f"Chosen init angle: {angle}")
+            init_params = params
+            break
+
     ids, points = triangulate_trackers(frame_trackers[known_view_1[0]],
                                        frame_trackers[known_view_2[0]],
                                        intrinsic_mat,
-                                       triang_params)
+                                       init_params)
+
+    point_cloud_builder = PointCloudBuilder(ids, points)
     if len(points) < MIN_STARTING_POINTS:
         print(f"Not enough starting points ({len(points)}), please choose another initial frames pair"
               f"\n0, 20 is a good pair for short fox, ")
         return [], PointCloudBuilder()
 
-    point_cloud_builder = PointCloudBuilder(ids, points)
-
     frame_trackers[known_view_1[0]].update_reproj_error(point_cloud_builder, intrinsic_mat)
     frame_trackers[known_view_2[0]].update_reproj_error(point_cloud_builder, intrinsic_mat)
 
-    track(ITERATIONS, frame_trackers, point_cloud_builder, intrinsic_mat)
+    point_cloud_builder = track(ITERATIONS, frame_trackers, point_cloud_builder, intrinsic_mat)
 
     view_mats = [x.mtx for x in frame_trackers]
     for i in range(1, len(view_mats)):
