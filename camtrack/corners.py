@@ -38,11 +38,12 @@ class Corners:
 
     def __init__(self, coords, sizes, ids=None):
         if ids is None:
-            ids = np.arange(self.MAX_ID, self.MAX_ID + sizes.size).astype(int)
-            self.MAX_ID += sizes.size
+            ids = np.arange(Corners.MAX_ID, Corners.MAX_ID + sizes.size).astype(int)
+            Corners.MAX_ID += sizes.size
         self.ids = np.reshape(ids, (-1))
         self.coords = np.reshape(coords, (-1, 2))
         self.sizes = np.reshape(sizes, (-1))
+        self._sort_data()
     def filter(self, f):
         bools = []
         for i in range(self.ids.size):
@@ -63,6 +64,13 @@ class Corners:
 
     def rescale(self, coef):
         return Corners((self.coords*coef).astype(int), self.sizes*coef, self.ids)
+
+    def _sort_data(self):
+        sorting_idx = np.argsort(self.ids.flatten())
+        self.ids = self.ids[sorting_idx].reshape(-1)
+        self.coords = self.coords[sorting_idx].reshape(-1, 2)
+        self.sizes = self.sizes[sorting_idx].reshape(-1)
+
 
 def detect_new_corners(img, feature_params):
     corners = cv2.goodFeaturesToTrack(img, mask=None, **feature_params)
@@ -96,7 +104,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                           qualityLevel=0.01,
                           minDistance=10,
                           blockSize=7)
-    lk_params = dict(winSize=(5, 5),
+    lk_params = dict(winSize=(7, 7),
                      maxLevel=2,
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5, 0.3))
 
