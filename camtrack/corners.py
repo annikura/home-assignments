@@ -53,7 +53,7 @@ class Corners:
 
     def merge(self, corners):
         def f(id, coords, size):
-            return not np.any((np.sum((self.coords - coords - 0.0) ** 2, axis=1) <= (size) ** 2))
+            return not np.any((np.sum((self.coords - coords - 0.0) ** 2, axis=1) <= (np.maximum(np.full_like(self.sizes, size), self.sizes) / 2) ** 2))
         corners = corners.filter(f)
         return Corners(np.concatenate((self.coords, corners.coords), axis=0),
                        np.concatenate((self.sizes, corners.sizes), axis=0),

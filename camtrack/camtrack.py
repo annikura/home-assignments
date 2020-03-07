@@ -179,8 +179,8 @@ def track(iters, trackers, cloud, camera):
             print("\rIteration {}/{}, PnP for frame {}/{}, {} inliners"
                   .format(iter + 1, iters, t.id, len(trackers), len(inliers)), end=' ' * 20)
             if len(inliers):
-                ids, _ = build_index_intersection(cloud.ids, inliers)
-                fc.add(inliers, cloud.points[ids], t.corners.ids)
+                ids1, ids2 = build_index_intersection(cloud.ids, inliers)
+                fc.add(inliers[ids2], cloud.points[ids1], t.corners.ids)
         good_points_ids, good_points = fc.get_freqs_above(INLINER_FREQUENCY_TRASHHOLD, MIN_INLINER_FRAMES)
         cloud = PointCloudBuilder(good_points_ids, good_points)
         cloud.add_points(start_ids, start_points)
@@ -189,6 +189,17 @@ def track(iters, trackers, cloud, camera):
 
         print("\rIteration {}/{}, {} points in the cloud"
               .format(iter + 1, iters, len(cloud.ids)), end=' ' * 20 + "\n")
+
+    fc = FrequencyCounter()
+    for t in trackers:
+        inliers = t.pnp(cloud, camera)
+        inliers = np.array(inliers).flatten().astype(int)
+        if len(inliers):
+            ids1, ids2 = build_index_intersection(cloud.ids, inliers)
+            fc.add(inliers[ids2], cloud.points[ids1], t.corners.ids)
+    good_points_ids, good_points = fc.get_freqs_above(INLINER_FREQUENCY_TRASHHOLD, MIN_INLINER_FRAMES)
+    cloud = PointCloudBuilder(good_points_ids, good_points)
+
     return cloud
 
 
