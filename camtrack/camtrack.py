@@ -16,6 +16,7 @@ import frameseq
 from _camtrack import (
     PointCloudBuilder,
     create_cli,
+    eye3x4,
     calc_point_cloud_colors,
     to_opencv_camera_mat3x3,
     view_mat3x4_to_pose,
@@ -80,9 +81,6 @@ class FrameTrack:
                                                                    camera @ self.mtx).mean()
 
     def pnp(self, cloud: PointCloudBuilder, camera):
-        if not self.changeble:
-            return []
-
         ids1, ids2 = build_index_intersection(cloud.ids, self.corners.ids)
         try:
             ret, rvec, tvec, inliers = cv2.solvePnPRansac(cloud.points[ids1],
@@ -183,7 +181,6 @@ def track(iters, trackers, cloud, camera):
                 fc.add(inliers[ids2], cloud.points[ids1], t.corners.ids)
         good_points_ids, good_points = fc.get_freqs_above(INLINER_FREQUENCY_TRASHHOLD, MIN_INLINER_FRAMES)
         cloud = PointCloudBuilder(good_points_ids, good_points)
-        cloud.add_points(start_ids, start_points)
         for t in trackers:
             t.pnp(cloud, camera)
 
@@ -203,20 +200,82 @@ def track(iters, trackers, cloud, camera):
     return cloud
 
 
+def get_best_intersected(corner_storage, min_dist=10, max_dist=50, min_intersections=10, max_frame=200):
+    assert min_dist > 0
+    variants = []
+    for i, corners1 in enumerate(corner_storage):
+        for j in range(i + min_dist, i + max_dist):
+            if j >= len(corner_storage) or j >= max_frame:
+                break
+            ids, _ = build_index_intersection(corner_storage[i].ids, corner_storage[j].ids)
+            if len(ids) > min_intersections:
+                variants.append((i, j, len(ids)))
+    return sorted(variants, key=lambda x: (x[2] // 20, x[1] - x[0]), reverse=True)
+
+
+def get_matrix_poses(corner_storage, intrisinc_mat):
+    pairs = get_best_intersected(corner_storage)
+    best_pair = -1, -1
+    best_pair_result = -1
+
+    for i, j, _ in pairs[:100]:
+        ids1, ids2 = build_index_intersection(corner_storage[i].ids, corner_storage[j].ids)
+        points1 = corner_storage[i].points[ids1]
+        points2 = corner_storage[j].points[ids2]
+
+        E, mask = cv2.findEssentialMat(points1, points2, focal=intrisinc_mat[0][0])
+        if mask.sum() < 10:
+            continue
+        F, mask = cv2.findFundamentalMat(points1, points2)
+        if mask.sum() < 10:
+            continue
+        _, R, t, mask = cv2.recoverPose(E, points1, points1, focal=intrisinc_mat[0][0])
+        if mask.sum() < 10:
+            continue
+
+        corrs = build_correspondences(corner_storage[i], corner_storage[j])
+        points, ids, _ = triangulate_correspondences(corrs,
+                                                     eye3x4(),
+                                                     np.hstack((R, t)),
+                                                     intrisinc_mat, TriangulationParameters(
+                                                         max_reprojection_error=5,
+                                                         min_triangulation_angle_deg=5.,
+                                                         min_depth=0.001))
+        current_result = len(ids) // 20
+        if current_result > best_pair_result:
+            best_pair = i, j
+            best_pair_result = current_result
+
+    i, j = best_pair
+
+    ids1, ids2 = build_index_intersection(corner_storage[i].ids, corner_storage[j].ids)
+    points1 = corner_storage[i].points[ids1]
+    points2 = corner_storage[j].points[ids2]
+
+    E, mask = cv2.findEssentialMat(points1, points2, focal=intrisinc_mat[0][0])
+    F, mask = cv2.findFundamentalMat(points1, points2)
+    _, R, t, mask = cv2.recoverPose(E, points1, points1, focal=intrisinc_mat[0][0])
+
+    print(f"Chosen frames {i} and {j}")
+
+    return (i, view_mat3x4_to_pose(eye3x4())),\
+           (j, view_mat3x4_to_pose(np.hstack((R, t))))
+
+
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
                           frame_sequence_path: str,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
-
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     intrinsic_mat = to_opencv_camera_mat3x3(
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
+
+    if known_view_1 is None or known_view_2 is None:
+        known_view_1, known_view_2 = get_matrix_poses(corner_storage, intrinsic_mat)
 
     video_size = len(rgb_sequence)
     frame_trackers = [FrameTrack(i, corner_storage[i]) for i in range(video_size)]
@@ -259,9 +318,11 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     view_mats = [x.mtx for x in frame_trackers]
     for i in range(1, len(view_mats)):
         if view_mats[i] is None:
+            print(i)
             view_mats[i] = view_mats[i - 1]
     for i in range(len(view_mats) - 2, -1, -1):
         if view_mats[i] is None:
+            print(i)
             view_mats[i] = view_mats[i + 1]
 
     calc_point_cloud_colors(
