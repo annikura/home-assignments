@@ -101,12 +101,12 @@ def track_corners_lk(old_img, new_img, corners, lk_params):
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     feature_params = dict(maxCorners=1000,
-                          qualityLevel=0.01,
+                          qualityLevel=0.1,
                           minDistance=10,
                           blockSize=7)
-    lk_params = dict(winSize=(7, 7),
-                     maxLevel=2,
-                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5, 0.3))
+    lk_params = dict(winSize=(25, 25),
+                     maxLevel=3,
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.02))
 
     old_img = frame_sequence[0]
 
@@ -138,7 +138,7 @@ def build(frame_sequence: pims.FramesSequence,
     else:
         builder = _CornerStorageBuilder()
         _build_impl(frame_sequence, builder)
-    return builder.build_corner_storage()
+    return without_short_tracks(builder.build_corner_storage(), 5)
 
 
 if __name__ == '__main__':

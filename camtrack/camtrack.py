@@ -32,15 +32,15 @@ from _corners import (
     filter_frame_corners,
 )
 
-INLINER_FREQUENCY_TRASHHOLD = 0.9
+INLINER_FREQUENCY_TRASHHOLD = 0.8
 MIN_INLINER_FRAMES = 5
 MIN_STARTING_POINTS = 5
 ITERATIONS = 5
 MAX_REPROJECTION_ERROR = 8
 MAX_TRANSLATION = 3
 
-FRAMES_STEP = 10
-FRAMES_MIN_WINDOW = 10
+FRAMES_STEP = 5
+FRAMES_MIN_WINDOW = 5
 FRAMES_MAX_WINDOW = 100
 
 triang_params = TriangulationParameters(max_reprojection_error=MAX_REPROJECTION_ERROR,
@@ -318,11 +318,9 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     view_mats = [x.mtx for x in frame_trackers]
     for i in range(1, len(view_mats)):
         if view_mats[i] is None:
-            print(i)
             view_mats[i] = view_mats[i - 1]
     for i in range(len(view_mats) - 2, -1, -1):
         if view_mats[i] is None:
-            print(i)
             view_mats[i] = view_mats[i + 1]
 
     calc_point_cloud_colors(
