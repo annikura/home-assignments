@@ -318,11 +318,9 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     view_mats = [x.mtx for x in frame_trackers]
     for i in range(1, len(view_mats)):
         if view_mats[i] is None:
-            print(i)
             view_mats[i] = view_mats[i - 1]
     for i in range(len(view_mats) - 2, -1, -1):
         if view_mats[i] is None:
-            print(i)
             view_mats[i] = view_mats[i + 1]
 
     calc_point_cloud_colors(
